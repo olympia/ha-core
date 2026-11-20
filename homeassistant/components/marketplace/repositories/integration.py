@@ -94,6 +94,15 @@ def _is_loadable_version(version: Any) -> bool:
     return True
 
 
+def _built_in_has_config_flow(domain: str) -> bool:
+    """Return if the built-in integration of the domain sets up config entries."""
+    manifest = Path(components.__file__).parent / domain / RepositoryFile.MANIFEST_JSON
+    try:
+        return json_loads_object(manifest.read_bytes()).get("config_flow") is True
+    except FileNotFoundError:
+        return False
+
+
 def _check_loadable_manifest(directory: Path, domain: str | None) -> None:
     """Refuse an installed manifest.json the loader would not load."""
     try:
@@ -239,6 +248,16 @@ class IntegrationRepository(Repository):
         # The same check the loader makes before loading a custom integration
         manifest = Path(components.__file__).parent / self.data.domain / "manifest.json"
         return await self.marketplace.hass.async_add_executor_job(manifest.is_file)
+
+    @override
+    async def async_built_in_loads_config_entries(self) -> bool:
+        """Return if a built-in integration of the domain sets up config entries."""
+        if not self.data.domain:
+            return False
+
+        return await self.marketplace.hass.async_add_executor_job(
+            _built_in_has_config_flow, self.data.domain
+        )
 
     @override
     async def async_post_uninstall(self) -> None:

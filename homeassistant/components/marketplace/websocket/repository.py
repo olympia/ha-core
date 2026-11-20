@@ -347,11 +347,12 @@ async def marketplace_repository_uninstall(
         )
         return
 
-    # Its config entries run the installed code, ignored ones too, they go first
+    # Its config entries go first, unless a built-in integration loads them instead
     if (
         repository.data.category == RepositoryCategory.INTEGRATION
         and repository.data.domain
         and hass.config_entries.async_entries(repository.data.domain)
+        and not await repository.async_built_in_loads_config_entries()
     ):
         send_translated_error(
             connection,

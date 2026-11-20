@@ -1203,6 +1203,10 @@ class Repository:
         """Return if the install takes the place of a built-in integration."""
         return False
 
+    async def async_built_in_loads_config_entries(self) -> bool:
+        """Return if a built-in integration sets up config entries of the install."""
+        return False
+
     async def _async_post_uninstall(self) -> None:
         """Run post uninstall steps."""
         await self.async_post_uninstall()

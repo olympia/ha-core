@@ -1,8 +1,11 @@
 """Tests for the Marketplace WebSocket API."""
 
 import asyncio
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import timedelta
 from http import HTTPStatus
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -1347,6 +1350,118 @@ async def test_repository_uninstall_refused_while_in_use(
 
     assert response["error"]["code"] == "repository_in_use"
     assert repository.data.installed is True
+
+
+@contextmanager
+def _built_in(tmp_path: Path, manifest: dict[str, Any]) -> Generator[None]:
+    """Make the domain of the repository one of a built-in integration."""
+    components = tmp_path / "components"
+    (components / "example").mkdir(parents=True)
+    (components / "example" / "manifest.json").write_text(json.dumps(manifest))
+    with patch(
+        "homeassistant.components.marketplace.repositories.integration.components",
+        __file__=str(components / "__init__.py"),
+    ):
+        yield
+
+
+@pytest.mark.parametrize(
+    ("source", "state"),
+    [
+        pytest.param(SOURCE_USER, ConfigEntryState.LOADED, id="set_up"),
+        pytest.param(SOURCE_IGNORE, ConfigEntryState.NOT_LOADED, id="ignored"),
+    ],
+)
+async def test_repository_uninstall_while_a_built_in_loads_the_entries(
+    hass: HomeAssistant,
+    marketplace: MarketplaceManager,
+    hass_ws_client: WebSocketGenerator,
+    tmp_path: Path,
+    source: str,
+    state: ConfigEntryState,
+) -> None:
+    """Test the entries stay for a built-in integration that sets them up."""
+    repository = marketplace.repositories.get_by_id(REPOSITORY_INTEGRATION_ID)
+    client = await hass_ws_client(hass)
+    with _built_in(
+        tmp_path, {"domain": "example", "name": "Example", "config_flow": True}
+    ):
+        await client.send_json_auto_id(
+            {
+                "type": "marketplace/repository/install",
+                "repository": REPOSITORY_INTEGRATION_ID,
+                "confirm_replace_built_in": True,
+            }
+        )
+        assert (await client.receive_json())["success"]
+        local_path = Path(repository.content.path.local)
+        assert local_path.is_dir()
+        entry = MockConfigEntry(domain="example", source=source, state=state)
+        entry.add_to_hass(hass)
+
+        await client.send_json_auto_id(
+            {
+                "type": "marketplace/repository/uninstall",
+                "repository": REPOSITORY_INTEGRATION_ID,
+            }
+        )
+        assert (await client.receive_json())["success"]
+
+    assert repository.data.installed is False
+    assert not local_path.exists()
+    assert hass.config_entries.async_entries("example") == [entry]
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        pytest.param({"domain": "example", "name": "Example"}, id="no_config_flow"),
+        pytest.param(
+            {
+                "domain": "example",
+                "name": "Example",
+                "integration_type": "virtual",
+                "supported_by": "other",
+            },
+            id="virtual",
+        ),
+    ],
+)
+async def test_repository_uninstall_refused_while_a_built_in_can_not_load_the_entries(
+    hass: HomeAssistant,
+    marketplace: MarketplaceManager,
+    hass_ws_client: WebSocketGenerator,
+    tmp_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    """Test entries a built-in integration can not set up keep the install."""
+    repository = marketplace.repositories.get_by_id(REPOSITORY_INTEGRATION_ID)
+    client = await hass_ws_client(hass)
+    with _built_in(tmp_path, manifest):
+        await client.send_json_auto_id(
+            {
+                "type": "marketplace/repository/install",
+                "repository": REPOSITORY_INTEGRATION_ID,
+                "confirm_replace_built_in": True,
+            }
+        )
+        assert (await client.receive_json())["success"]
+        local_path = Path(repository.content.path.local)
+        MockConfigEntry(domain="example", state=ConfigEntryState.LOADED).add_to_hass(
+            hass
+        )
+
+        await client.send_json_auto_id(
+            {
+                "type": "marketplace/repository/uninstall",
+                "repository": REPOSITORY_INTEGRATION_ID,
+            }
+        )
+        response = await client.receive_json()
+
+    assert response["error"]["code"] == "repository_in_use"
+    assert repository.data.installed is True
+    assert local_path.is_dir()
 
 
 async def test_repository_releases(
